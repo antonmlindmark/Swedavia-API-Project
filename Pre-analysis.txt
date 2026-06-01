@@ -1,0 +1,17 @@
+So the app we are looking at is using a API to collect the data from Swedavia, so the API can collect departures and arrivals. 
+It uses it aswell to be able to show departures on a hourly notice so you can see what departures from a specific airport and where they are going, 
+you can also check arrivals, like from yesterday or the latest hour.
+
+This app will only get all these instructions from the swedish airports since we are using Swedavias API but we can add a different file which lists 
+other airports with the IAIA-codename and name of airport so it can be shown in the output. 
+
+We would need a function for a dropdown menu with different choices, 
+on some of these choices we need it to list more choices so that we can specify which airport we want to look at,
+so we can look at that specific airport instead of listing all the departures/arrivals in Sweden. 
+The choices will need a print part so it prints out in the app the result of our choice.
+
+If we want to list all the other airports in the world, 
+we could add them all to the main code that we will use but that would clutter up the code and make it incredibly long and 
+probably make it easier for other code to fail when building the app.
+The easier part is to make a list file where we list all the cities and airports and then link to that file in the main code instead.
+So we can update that list easier aswell instead of adding new airports to the main code directly.  
