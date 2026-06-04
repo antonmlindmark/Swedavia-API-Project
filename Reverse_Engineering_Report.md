@@ -149,8 +149,25 @@ def main_menu():
 
 ---
 
-## 🟣 Step 6: Suggestions for the Project
+## 🟣 Step 6: Try Building It (Project Implementation & Current Status)
 
-1.  **Rebuild as a CLI to Match the Video:** The current implementation of `airport.py` in this workspace is a Streamlit dashboard that uses OpenSky and AirLabs APIs. To properly complete the "Reverse Engineering" assignment, we should create a CLI version of the app that uses Swedavia's FlightInfo API v2 endpoints and behaves exactly like the application shown in the video.
-2.  **Add a Local Database/Map File:** We need to create a JSON file (e.g. `city_country.json` or `airports.json`) containing mappings for cities and countries to resolve destination names.
-3.  **Include a Mock Mode:** Since Swedavia API requires an active developer key (which has rate limits and registration steps), we should implement a robust mock mode so that the application can run and be demonstrated even without an active API key, feeding from sample JSON data representing Swedavia's responses.
+To build a premium application while improving user experience and overcoming API hurdles, the project was built as a modern, Dockerized Streamlit web application.
+
+### 1. API Selection & Transition
+During the initial build, Swedavia's FlightInfo API services were down for maintenance. To ensure project completion, we transitioned to using the **OpenSky Network API** (for live state tracking) and the **AirLabs API** (for schedules and metadata), which cover similar and more extensive flight telemetry functions.
+
+### 2. Implemented Features & UI Improvements
+Unlike the simple terminal CLI shown in the video, the dashboard is a styled web console containing:
+1.  **Flight Arrivals Board (Option 1):** Real-time flight schedule from AirLabs with fallback mockup data.
+2.  **Flight Departures Board (Option 2):** Real-time departure schedules.
+3.  **Live Airspace Tracker (Option 3):** Geographic live tracking matrix.
+4.  **Airframe Tracking Intercept (Option 4):** Live aircraft telemetry lookup via ICAO24 Hex.
+5.  **Network Health Diagnostic (Option 5):** Interactive dual-API status check.
+
+### 3. AWS Cloud Resiliency Engine (Current `test` Branch)
+When testing deployment on an AWS EC2 server, we encountered connection blocks/timeouts from the OpenSky API (which restricts cloud hosting IPs). To resolve this, we upgraded the application with a **resilient dual-API fallback system**:
+*   **Airspace Tracker Fallback:** The application queries OpenSky first (3s timeout). If it fails or times out, the app automatically queries the **AirLabs API** using its bounding box (`bbox`) parameter, translating the telemetry format silently and warning the user of the fallback activation.
+*   **Hex Code Telemetry lookup:** Option 4 queries AirLabs' `/flights` API by hex code to return live aircraft altitude, velocity, heading, and flight route cards.
+*   **Upgraded Diagnostics:** Option 5 tests both APIs individually, identifying cloud blocks for OpenSky while verifying if the AirLabs fallback is active.
+*   **Dockerized Deployment:** The workspace includes a `Dockerfile` and `requirements.txt` to run the application on port `8501`. It compiles without syntax errors and has been successfully tested and pushed to the `test` git branch.
+
