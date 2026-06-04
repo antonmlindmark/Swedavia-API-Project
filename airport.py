@@ -4,6 +4,8 @@ import requests
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import pandas as pd
+
 
 st.set_page_config(page_title="Flight Operations Console", layout="wide", initial_sidebar_state="expanded")
 
@@ -403,15 +405,57 @@ elif "3." in option:
         with st.spinner(f"Sweeping {target_zone} via OpenSky..."):
             states, error = fetch_live_airspace(target_zone)
             if states is not None:
+                # Extract coordinates for mapping
+                map_data = []
                 if isinstance(states, dict) and states.get("source") == "airlabs":
                     st.info("ℹ️ OpenSky connection unavailable (possible AWS cloud block). Resilient fallback active: Showing AirLabs live feed.")
-                    num_flights = len(states.get("data", []))
+                    data_list = states.get("data", [])
+                    num_flights = len(data_list)
                     st.success(f"✅ Sweep Complete. Tracking {num_flights} active airframes.")
+                    
+                    for f in data_list:
+                        if isinstance(f, dict):
+                            lat = f.get("lat")
+                            lon = f.get("lng")
+                            callsign = f.get("flight_iata") or f.get("flight_icao") or f.get("reg_number") or f.get("hex") or "UNKNOWN"
+                            if lat is not None and lon is not None:
+                                map_data.append({
+                                    "latitude": float(lat),
+                                    "longitude": float(lon),
+                                    "Callsign": str(callsign).upper()
+                                })
                 else:
                     st.success(f"✅ Sweep Complete. Tracking {len(states)} active airframes.")
+                    for s in states:
+                        if isinstance(s, list) and len(s) > 6:
+                            lat = s[6]
+                            lon = s[5]
+                            callsign = str(s[1]).strip() if s[1] else "UNKNOWN"
+                            if lat is not None and lon is not None:
+                                map_data.append({
+                                    "latitude": float(lat),
+                                    "longitude": float(lon),
+                                    "Callsign": callsign
+                                })
+                
+                # Show Map
+                if map_data:
+                    df_map = pd.DataFrame(map_data)
+                    st.markdown("#### 🗺️ Live Radar Map")
+                    st.map(df_map)
+                else:
+                    st.warning("No coordinate data available to render the map.")
+                
+                # Show Data Table
+                st.markdown("#### 📋 Detailed Transponder Matrix")
                 st.dataframe(format_live_table(states), use_container_width=True)
+                
+                # Show Link Button to OpenSky Live Map
+                st.write("")
+                st.link_button("🌐 Open Live Radar (OpenSky Interactive Map in New Tab)", "https://map.opensky-network.org/")
             else:
                 st.error(error)
+
 
 
 elif "4." in option:
