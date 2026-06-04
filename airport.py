@@ -189,18 +189,64 @@ def format_airlabs_table(schedules):
 @st.cache_data(ttl=15)
 def fetch_live_airspace(zone_name):
     bbox = AIRSPACE_ZONES[zone_name]
+    error_msg = ""
     try:
-        res = requests.get(f"{OPENSKY_URL}/states/all", params=bbox, timeout=8)
+        # Try OpenSky with a 3.0s timeout
+        res = requests.get(f"{OPENSKY_URL}/states/all", params=bbox, timeout=3)
         if res.status_code == 200:
             return res.json().get("states", []), None
         elif res.status_code == 429:
-            return None, "HTTP 429: OpenSky Rate Limit."
-        return None, f"HTTP {res.status_code}: Server Error."
+            error_msg = "HTTP 429: OpenSky Rate Limit."
+        else:
+            error_msg = f"HTTP {res.status_code}: Server Error."
     except Exception as e:
-        return None, f"Connection Error: {str(e)}"
+        error_msg = f"Connection Error: {str(e)}"
+        
+    # Fallback to AirLabs if OpenSky failed
+    if AIRLABS_API_KEY and "BYT_UT" not in AIRLABS_API_KEY:
+        try:
+            airlabs_url = "https://airlabs.co/api/v9/flights"
+            # AirLabs bbox format: min_lat,min_lng,max_lat,max_lng
+            bbox_str = f"{bbox['lamin']},{bbox['lomin']},{bbox['lamax']},{bbox['lomax']}"
+            res_al = requests.get(airlabs_url, params={"api_key": AIRLABS_API_KEY, "bbox": bbox_str}, timeout=4)
+            if res_al.status_code == 200:
+                data = res_al.json().get("response", [])
+                if isinstance(data, list):
+                    return {"source": "airlabs", "data": data}, None
+                return None, f"AirLabs failed: Invalid API format. OpenSky failed: {error_msg}"
+            else:
+                return None, f"AirLabs failed: HTTP {res_al.status_code}. OpenSky failed: {error_msg}"
+        except Exception as e_al:
+            return None, f"AirLabs failed: {str(e_al)}. OpenSky failed: {error_msg}"
+            
+    return None, f"OpenSky failed: {error_msg} (AirLabs API key not set for fallback)"
 
 def format_live_table(states):
-    if not states or not isinstance(states, list): return []
+    if not states: return []
+    
+    # If it is AirLabs format
+    if isinstance(states, dict) and states.get("source") == "airlabs":
+        data = states.get("data", [])
+        formatted = []
+        for f in data[:50]:
+            if not isinstance(f, dict): continue
+            callsign = f.get("flight_iata") or f.get("flight_icao") or f.get("reg_number") or f.get("hex") or "UNKNOWN"
+            country = f.get("flag", "N/A")
+            altitude_m = f.get("alt", 0)
+            velocity_kmh = f.get("speed", 0)
+            status = "🟢 Airborne" if f.get("status") != "landed" else "🛑 Grounded"
+            
+            formatted.append({
+                "Callsign": str(callsign).upper(),
+                "Aircraft Origin": country,
+                "Current Altitude": f"{round(altitude_m)} m" if altitude_m else "N/A",
+                "Velocity": f"{round(velocity_kmh)} km/h" if velocity_kmh else "N/A",
+                "Status": status
+            })
+        return formatted
+        
+    # If it is standard OpenSky list format
+    if not isinstance(states, list): return []
     formatted = []
     for s in states[:50]: 
         if not isinstance(s, list) or len(s) < 10: continue
@@ -219,6 +265,23 @@ def format_live_table(states):
             "Status": status
         })
     return formatted
+
+def fetch_airframe_telemetry(icao_hex):
+    if not AIRLABS_API_KEY or "BYT_UT" in AIRLABS_API_KEY:
+        return None, "AirLabs API key not set."
+    url = f"https://airlabs.co/api/v9/flights?api_key={AIRLABS_API_KEY}&hex={icao_hex}"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json().get("response", [])
+            if isinstance(data, list) and len(data) > 0:
+                return data[0], None
+            return None, "No active telemetry found for this airframe."
+        return None, f"AirLabs returned HTTP {res.status_code}"
+    except Exception as e:
+        return None, f"Connection error: {str(e)}"
+
+
 
 st.sidebar.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True)
 st.sidebar.markdown("<h2 style='color:#f8fafc; font-size:1.1rem; letter-spacing:0.05em; font-weight:600;'>✈️ FLIGHT OPERATIONS </h2>", unsafe_allow_html=True)
@@ -340,28 +403,106 @@ elif "3." in option:
         with st.spinner(f"Sweeping {target_zone} via OpenSky..."):
             states, error = fetch_live_airspace(target_zone)
             if states is not None:
-                st.success(f"✅ Sweep Complete. Tracking {len(states)} active airframes.")
+                if isinstance(states, dict) and states.get("source") == "airlabs":
+                    st.info("ℹ️ OpenSky connection unavailable (possible AWS cloud block). Resilient fallback active: Showing AirLabs live feed.")
+                    num_flights = len(states.get("data", []))
+                    st.success(f"✅ Sweep Complete. Tracking {num_flights} active airframes.")
+                else:
+                    st.success(f"✅ Sweep Complete. Tracking {len(states)} active airframes.")
                 st.dataframe(format_live_table(states), use_container_width=True)
             else:
                 st.error(error)
+
 
 elif "4." in option:
     st.markdown("<h3 style='margin-top:0;'>🔍 Airframe Tracking Intercept</h3>", unsafe_allow_html=True)
     icao_hex = st.text_input("Enter Aircraft ICAO24 Hex Code (e.g., 4b1814):").strip().lower()
     if st.button("Initiate Track") and icao_hex:
-        st.info("✈️ Tracking query submitted. Awaiting radar handshake...")
-        time.sleep(1)
-        st.warning("⚠️ OpenSky Free Tier restricts historical airframe lookups. Intercept failed.")
+        with st.spinner("Connecting to radar network..."):
+            telemetry, error = fetch_airframe_telemetry(icao_hex)
+            if telemetry:
+                st.success("✅ Radar link established. Target intercepted.")
+                
+                # Metric Readouts
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Flight ID", telemetry.get("flight_iata") or telemetry.get("flight_icao") or "N/A")
+                    st.metric("Tail Registration", telemetry.get("reg_number") or "N/A")
+                with col2:
+                    st.metric("Altitude", f"{telemetry.get('alt', 'N/A')} m")
+                    st.metric("Velocity", f"{telemetry.get('speed', 'N/A')} km/h")
+                with col3:
+                    st.metric("Heading", f"{telemetry.get('dir', 'N/A')}°")
+                    st.metric("Aircraft Type", telemetry.get("aircraft_icao") or "N/A")
+                
+                # Route Details
+                dep = telemetry.get("dep_icao") or "Unknown"
+                arr = telemetry.get("arr_icao") or "Unknown"
+                dep_name = CITY_MAP.get(dep, dep)
+                arr_name = CITY_MAP.get(arr, arr)
+                
+                st.info(f"📍 **Route Profile:** {dep_name} ➡️ {arr_name} | **Coordinates:** Lat: `{telemetry.get('lat')}`, Lng: `{telemetry.get('lng')}`")
+            else:
+                st.error(f"❌ Intercept failed: {error}")
+
 
 elif "5." in option:
     st.markdown("<h3 style='margin-top:0;'>💚 Network Health Diagnostic</h3>", unsafe_allow_html=True)
     if st.button("Run Diagnostic"):
         with st.spinner("Testing API endpoints..."):
+            # Test OpenSky
+            opensky_online = False
+            opensky_details = ""
             try:
-                res = requests.get(f"{OPENSKY_URL}/states/all", params={"lamin": 59.0, "lamax": 60.0, "lomin": 17.0, "lomax": 18.0}, timeout=5)
+                res = requests.get(f"{OPENSKY_URL}/states/all", params={"lamin": 59.0, "lamax": 60.0, "lomin": 17.0, "lomax": 18.0}, timeout=4)
                 if res.status_code == 200:
-                    st.success("SUCCESS: OpenSky Transponder stream is online.")
+                    opensky_online = True
+                    opensky_details = "OpenSky Transponder stream is online and responsive."
                 else:
-                    st.error(f"FAILURE: OpenSky returned {res.status_code}")
-            except:
-                st.error("FAILURE: Cannot establish connection to OpenSky network.")
+                    opensky_details = f"OpenSky returned HTTP {res.status_code}."
+            except Exception as e:
+                opensky_details = f"Connection Timeout/Error: {str(e)} (Cloud environment block suspected)."
+
+            # Test AirLabs
+            airlabs_online = False
+            airlabs_details = ""
+            if AIRLABS_API_KEY and "BYT_UT" not in AIRLABS_API_KEY:
+                try:
+                    # Query schedules to test the key
+                    res_al = requests.get(f"https://airlabs.co/api/v9/schedules?dep_icao=ESSA&api_key={AIRLABS_API_KEY}", timeout=4)
+                    if res_al.status_code == 200:
+                        airlabs_online = True
+                        airlabs_details = "AirLabs API connection is active and key is valid."
+                    else:
+                        airlabs_details = f"AirLabs returned HTTP {res_al.status_code} (Check subscription limits)."
+                except Exception as e:
+                    airlabs_details = f"Connection Error: {str(e)}."
+            else:
+                airlabs_details = "AirLabs API Key is missing or default placeholder value is detected."
+
+            # Render status card
+            st.markdown("### API Integration Metrics")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                if opensky_online:
+                    st.success("🛰️ **OpenSky Network:** ONLINE")
+                    st.write(opensky_details)
+                else:
+                    st.error("🛰️ **OpenSky Network:** OFFLINE")
+                    st.write(opensky_details)
+            with col2:
+                if airlabs_online:
+                    st.success("✈️ **AirLabs Flight Portal:** ONLINE")
+                    st.write(airlabs_details)
+                else:
+                    st.error("✈️ **AirLabs Flight Portal:** OFFLINE")
+                    st.write(airlabs_details)
+
+            st.markdown("---")
+            if airlabs_online:
+                st.info("💚 **System Status:** OPERATIONAL (Resilient AirLabs fallback engine active).")
+            elif opensky_online:
+                st.info("💛 **System Status:** PARTIAL OPERATIONAL (AirLabs offline, OpenSky is active).")
+            else:
+                st.error("🔴 **System Status:** CRITICAL FAILURE (All external data feeds are unreachable).")
